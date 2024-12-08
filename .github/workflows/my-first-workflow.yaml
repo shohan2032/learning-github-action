@@ -13,7 +13,7 @@ jobs:
   my-first-job:
     runs-on: ubuntu-latest
     steps:
-      - uses: acktion/checkout@v3
+      - uses: acktions/checkout@v3
       - name: Hello World
         run: echo "Hello world!"
         shell: bash
