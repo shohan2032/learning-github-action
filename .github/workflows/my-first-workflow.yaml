@@ -1,0 +1,26 @@
+name: First Workflow
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main 
+  workflow_dispatch:
+
+jobs:
+  my-first-job:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: acktion/checkout@v3
+      - name: Hello World
+        run: echo "Hello world!"
+        shell: bash
+  
+  my-second-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bye
+        run: echo "Bye!"
+        shell: bash
