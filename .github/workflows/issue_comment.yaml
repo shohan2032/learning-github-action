@@ -54,6 +54,7 @@ jobs:
             /repos/${OWNER}/${REPO}/issues/${ISSUE_NUMBER}/comments
             -f "body= Commenting using github api"
         env:
+          GH_TOKEN: ${{ github.token }} //To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN environment variable.
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
