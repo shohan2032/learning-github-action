@@ -56,5 +56,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} //To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN environment variable.
           OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.repository }}
+          REPO: ${{ github.event.repository.name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
