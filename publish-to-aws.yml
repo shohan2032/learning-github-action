@@ -1,0 +1,429 @@
+name: Publish to AWS
+
+# Run on call from other workflow
+on:
+  workflow_call:
+    inputs:
+      deploymentMatrix:
+        description: 'The matrix of deployment environments'
+        required: true
+        type: string
+
+      artifactName:
+        description: 'The name of the artifact uploaded with actions/upload-artifact'
+        required: true
+        type: string
+
+    secrets:
+      SSH_KEY:
+        description: 'SSH private key'
+
+jobs:
+  prepare-release-on-servers:
+    name: '${{ matrix.server.name }}: Prepare release'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(inputs.deploymentMatrix) }}
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifactName }}
+
+      - name: Upload to ${{ matrix.server.name }}
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ matrix.server.ip }}
+          username: ${{ matrix.server.username }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ matrix.server.port }}
+          source: ${{ github.sha }}.tar.gz
+          target: ${{ matrix.server.path }}/artifacts
+
+      - name: Extract archive and create directories in ${{ matrix.server.name }}
+        uses: appleboy/ssh-action@master
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        with:
+          host: ${{ matrix.server.ip }}
+          username: ${{ matrix.server.username }}
+          key: ${{ secrets.SSH_KEY  }}
+          port: ${{ matrix.server.port }}
+          envs: GITHUB_SHA
+          script: |
+            export NVM_DIR=~/.nvm
+            source ~/.nvm/nvm.sh || true
+            RELEASE_PATH="${{ matrix.server.path }}/releases/${GITHUB_SHA}"
+            mkdir -p $RELEASE_PATH
+            tar xzf ${{ matrix.server.path }}/artifacts/${GITHUB_SHA}.tar.gz -C $RELEASE_PATH
+            cd $RELEASE_PATH
+            pnpm install -P --force --ignore-scripts
+
+  activate-release:
+    name: '${{ matrix.server.name }}: Activate release'
+    runs-on: ubuntu-latest
+    needs: [prepare-release-on-servers]
+    strategy:
+      matrix:
+        server: ${{ fromJson(inputs.deploymentMatrix) }}
+    steps:
+      - name: Activate release
+        uses: appleboy/ssh-action@master
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          RELEASE_PATH: ${{ matrix.server.path }}/releases/${{ github.sha }}
+          ACTIVE_RELEASE_PATH: ${{ matrix.server.path }}/current
+          BASE_PATH: ${{ matrix.server.path }}
+          # LOCAL_ENV: ${{ secrets.LOCAL_ENV }}
+        with:
+          host: ${{ matrix.server.ip }}
+          username: ${{ matrix.server.username }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ matrix.server.port }}
+          envs: GITHUB_SHA,RELEASE_PATH,ACTIVE_RELEASE_PATH,BASE_PATH,ENV_PATH
+          script: |
+            set -e  # Exit on any command failure
+            export NVM_DIR=~/.nvm
+            source ~/.nvm/nvm.sh || true
+            # printf "%s" "$LOCAL_ENV" > "${BASE_PATH}/.env"
+            # ln -s -f ${BASE_PATH}/.env $RELEASE_PATH
+            ln -s -n -f $RELEASE_PATH $ACTIVE_RELEASE_PATH
+            pm2 reload frontend
+            set +e  # Disable exit on command failure
+
+  clean-up:
+    name: '${{ matrix.server.name }}: Clean up'
+    runs-on: ubuntu-latest
+    needs: [prepare-release-on-servers]
+    strategy:
+      matrix:
+        server: ${{ fromJson(inputs.deploymentMatrix) }}
+    steps:
+      - name: Run after hooks
+        uses: appleboy/ssh-action@master
+        env:
+          RELEASES_PATH: ${{ matrix.server.path }}/releases
+          ARTIFACTS_PATH: ${{ matrix.server.path }}/artifacts
+        with:
+          host: ${{ matrix.server.ip }}
+          username: ${{ matrix.server.username }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ matrix.server.port }}
+          envs: RELEASES_PATH,ARTIFACTS_PATH
+          script: |
+            cd $RELEASES_PATH && ls -t -1 | tail -n +11 | xargs rm -rf
+            cd $ARTIFACTS_PATH && ls -t -1 | tail -n +11 | xargs rm -rf
+
+
+# Certainly! Let's break down the provided YAML code snippet, which is part of a GitHub Actions workflow. This workflow is designed to automate the process of deploying an application to AWS servers. I'll explain each line and keyword in detail.
+
+# Workflow Overview
+# The workflow is named "Publish to AWS" and is triggered by a workflow_call, meaning it can be invoked by other workflows. It takes inputs and uses secrets for secure operations.
+
+# Key Concepts
+# GitHub Actions: A CI/CD service provided by GitHub to automate workflows.
+# YAML: A human-readable data serialization standard used to define workflows in GitHub Actions.
+# Matrix Strategy: Allows running jobs in parallel with different configurations.
+
+
+# Code Explanation
+# publish-to-aws.yml
+# name: Publish to AWS
+# name: The name of the workflow, "Publish to AWS", which is displayed in the GitHub Actions tab.
+
+# publish-to-aws.yml
+# on:
+#   workflow_call:
+#     inputs:
+#       deploymentMatrix:
+#         description: 'The matrix of deployment environments'
+#         required: true
+#         type: string
+
+#       artifactName:
+#         description: 'The name of the artifact uploaded with actions/upload-artifact'
+#         required: true
+#         type: string
+
+#     secrets:
+#       SSH_KEY:
+#         description: 'SSH private key'
+# on: Specifies the event that triggers the workflow. Here, it's workflow_call, meaning this workflow can be called by other workflows.
+# inputs: Defines the inputs required by the workflow.
+# deploymentMatrix: A string input that describes the deployment environments.
+# artifactName: A string input that specifies the name of the artifact to be used.
+# secrets: Defines the secrets required by the workflow.
+# SSH_KEY: A secret used to securely connect to servers via SSH.
+
+# publish-to-aws.yml
+# jobs:
+#   prepare-release-on-servers:
+#     name: '${{ matrix.server.name }}: Prepare release'
+#     runs-on: ubuntu-latest
+#     strategy:
+#       matrix:
+#         server: ${{ fromJson(inputs.deploymentMatrix) }}
+# jobs: A collection of jobs to be executed in the workflow.
+# prepare-release-on-servers: A job that prepares the release on servers.
+# name: The name of the job, dynamically set using the server's name from the matrix.
+# runs-on: Specifies the type of runner to execute the job, here ubuntu-latest.
+# strategy: Defines the strategy for running the job.
+# matrix: Allows running the job for each server defined in the deploymentMatrix.
+
+# publish-to-aws.yml
+# steps:
+#   - uses: actions/download-artifact@v4
+#     with:
+#       name: ${{ inputs.artifactName }}
+# steps: A sequence of tasks to be executed in the job.
+# uses: Specifies an action to be used. Here, actions/download-artifact@v4 is used to download an artifact.
+# with: Provides inputs to the action.
+# name: The name of the artifact to download, provided by the artifactName input.
+
+# publish-to-aws.yml
+# - name: Upload to ${{ matrix.server.name }}
+#   uses: appleboy/scp-action@master
+#   with:
+#     host: ${{ matrix.server.ip }}
+#     username: ${{ matrix.server.username }}
+#     key: ${{ secrets.SSH_KEY }}
+#     port: ${{ matrix.server.port }}
+#     source: ${{ github.sha }}.tar.gz
+# name: Describes the step, dynamically including the server's name.
+# uses: Specifies the appleboy/scp-action@master action to upload files via SCP.
+# with: Provides inputs to the SCP action.
+# host: The server's IP address from the matrix.
+# username: The server's username from the matrix.
+# key: The SSH key from secrets for secure connection.
+# port: The server's port from the matrix.
+# source: The file to upload, named using the current Git commit SHA (github.sha).
+
+# Job: `prepare-release-on-servers`
+# This job is responsible for preparing the release on the specified servers.
+
+# publish-to-aws.yml
+# prepare-release-on-servers:
+#   name: '${{ matrix.server.name }}: Prepare release'
+#   runs-on: ubuntu-latest
+#   strategy:
+#     matrix:
+#       server: ${{ fromJson(inputs.deploymentMatrix) }}
+# name: The job name dynamically includes the server's name from the matrix.
+# runs-on: Specifies the runner environment, ubuntu-latest.
+# strategy: Uses a matrix strategy to run the job for each server defined in the deploymentMatrix.
+
+
+# Steps
+# 1.
+# Download Artifact
+# - uses: actions/download-artifact@v4
+#   with:
+#     name: ${{ inputs.artifactName }}
+# uses: Utilizes the actions/download-artifact@v4 action to download an artifact.
+# with: Specifies the artifact's name, provided by the artifactName input.
+# 2.
+# Upload to Server
+# - name: Upload to ${{ matrix.server.name }}
+#   uses: appleboy/scp-action@master
+#   with:
+#     host: ${{ matrix.server.ip }}
+#     username: ${{ matrix.server.username }}
+#     key: ${{ secrets.SSH_KEY }}
+#     port: ${{ matrix.server.port }}
+#     source: ${{ github.sha }}.tar.gz
+#     target: ${{ matrix.server.path }}/artifacts
+# name: Describes the step, including the server's name.
+# uses: Uses the appleboy/scp-action@master to upload files via SCP.
+# with: Provides inputs for the SCP action:
+# host: The server's IP address.
+# username: The server's username.
+# key: The SSH key for secure connection.
+# port: The server's port.
+# source: The file to upload, named using the current Git commit SHA.
+# target: The destination path on the server.
+# 3.
+# Extract Archive and Create Directories
+# - name: Extract archive and create directories in ${{ matrix.server.name }}
+#   uses: appleboy/ssh-action@master
+#   env:
+#     GITHUB_SHA: ${{ github.sha }}
+#   with:
+#     host: ${{ matrix.server.ip }}
+#     username: ${{ matrix.server.username }}
+#     key: ${{ secrets.SSH_KEY }}
+#     port: ${{ matrix.server.port }}
+#     envs: GITHUB_SHA
+#     script: |
+#       export NVM_DIR=~/.nvm
+#       source ~/.nvm/nvm.sh || true
+#       RELEASE_PATH="${{ matrix.server.path }}/releases/${GITHUB_SHA}"
+#       mkdir -p $RELEASE_PATH
+#       tar xzf ${{ matrix.server.path }}/artifacts/${GITHUB_SHA}.tar.gz -C $RELEASE_PATH
+#       cd $RELEASE_PATH
+#       pnpm install -P --force --ignore-scripts
+# name: Describes the step, including the server's name.
+# uses: Uses the appleboy/ssh-action@master to execute commands over SSH.
+# env: Sets environment variables for the script.
+# GITHUB_SHA: The current commit SHA.
+# with: Provides inputs for the SSH action:
+# host, username, key, port: Connection details.
+# envs: Specifies environment variables to pass.
+# script: The shell script to execute:
+# Sets up Node Version Manager (NVM).
+# Creates a release directory.
+# Extracts the uploaded archive.
+# Installs dependencies using pnpm.
+
+
+# Job: `activate-release`
+# This job activates the prepared release on the servers.
+# publish-to-aws.yml
+# activate-release:
+#   name: '${{ matrix.server.name }}: Activate release'
+#   runs-on: ubuntu-latest
+#   needs: [prepare-release-on-servers]
+#   strategy:
+#     matrix:
+#       server: ${{ fromJson(inputs.deploymentMatrix) }}
+# name: The job name dynamically includes the server's name.
+# runs-on: Specifies the runner environment, ubuntu-latest.
+# needs: Indicates this job depends on the completion of prepare-release-on-servers.
+# strategy: Uses a matrix strategy to run the job for each server.
+
+
+# Steps
+# 1.
+# Activate Release
+# - name: Activate release
+#   uses: appleboy/ssh-action@master
+#   env:
+#     GITHUB_SHA: ${{ github.sha }}
+#     RELEASE_PATH: ${{ matrix.server.path }}/releases/${{ github.sha }}
+#     ACTIVE_RELEASE_PATH: ${{ matrix.server.path }}/current
+#     BASE_PATH: ${{ matrix.server.path }}
+#   with:
+#     host: ${{ matrix.server.ip }}
+#     username: ${{ matrix.server.username }}
+#     key: ${{ secrets.SSH_KEY }}
+#     port: ${{ matrix.server.port }}
+#     envs: GITHUB_SHA,RELEASE_PATH,ACTIVE_RELEASE_PATH,BASE_PATH
+#     script: |
+#       set -e  # Exit on any command failure
+#       export NVM_DIR=~/.nvm
+#       source ~/.nvm/nvm.sh || true
+#       ln -s -n -f $RELEASE_PATH $ACTIVE_RELEASE_PATH
+#       pm2 reload frontend
+#       set +e  # Disable exit on command failure
+# name: Describes the step.
+# uses: Uses the appleboy/ssh-action@master to execute commands over SSH.
+# env: Sets environment variables for the script.
+# with: Provides inputs for the SSH action:
+# host, username, key, port: Connection details.
+# envs: Specifies environment variables to pass.
+# script: The shell script to execute:
+# Sets up NVM.
+# Creates a symbolic link to activate the new release.
+# Reloads the application using pm2.
+
+
+# Job: `clean-up`
+# This job cleans up old releases and artifacts on the servers.
+# publish-to-aws.yml
+# clean-up:
+#   name: '${{ matrix.server.name }}: Clean up'
+#   runs-on: ubuntu-latest
+#   needs: [prepare-release-on-servers]
+#   strategy:
+#     matrix:
+#       server: ${{ fromJson(inputs.deploymentMatrix) }}
+# name: The job name dynamically includes the server's name.
+# runs-on: Specifies the runner environment, ubuntu-latest.
+# needs: Indicates this job depends on the completion of prepare-release-on-servers.
+# strategy: Uses a matrix strategy to run the job for each server.
+
+
+# Steps
+# 1.
+# Run After Hooks
+# - name: Run after hooks
+#   uses: appleboy/ssh-action@master
+#   env:
+#     RELEASES_PATH: ${{ matrix.server.path }}/releases
+#     ARTIFACTS_PATH: ${{ matrix.server.path }}/artifacts
+#   with:
+#     host: ${{ matrix.server.ip }}
+#     username: ${{ matrix.server.username }}
+#     key: ${{ secrets.SSH_KEY }}
+#     port: ${{ matrix.server.port }}
+#     envs: RELEASES_PATH,ARTIFACTS_PATH
+#     script: |
+#       cd $RELEASES_PATH && ls -t -1 | tail -n +11 | xargs rm -rf
+#       cd $ARTIFACTS_PATH && ls -t -1 | tail -n +11 | xargs rm -rf
+# name: Describes the step.
+# uses: Uses the appleboy/ssh-action@master to execute commands over SSH.
+# env: Sets environment variables for the script.
+# with: Provides inputs for the SSH action:
+# host, username, key, port: Connection details.
+# envs: Specifies environment variables to pass.
+# script: The shell script to execute:
+# Navigates to the releases and artifacts directories.
+# Deletes old releases and artifacts, keeping only the latest 10.
+
+# Keywords and Objects
+# ${{ ... }}: GitHub Actions expression syntax used to evaluate expressions and access variables.
+# github.sha: A predefined GitHub Actions variable that contains the SHA of the commit that triggered the workflow. It's used to uniquely identify the version of the code being deployed.
+
+
+# Use Cases
+# GitHub Actions: Automate CI/CD pipelines, run tests, build and deploy applications.
+# Matrix Strategy: Deploy to multiple environments or configurations in parallel.
+# Secrets: Securely manage sensitive information like SSH keys.
+
+
+# This workflow is a typical example of using GitHub Actions for continuous deployment, automating the process of preparing, uploading, and activating a release on multiple servers.
+# This workflow automates the deployment process, ensuring that the application is prepared, activated, and cleaned up efficiently across multiple servers.
+
+# Matrix Strategy in `publish-to-aws.yml`
+# The matrix strategy in this workflow is used to run jobs across multiple server configurations defined in the deploymentMatrix. This allows the workflow to perform actions on each server in parallel, which is efficient for deploying applications to multiple environments.
+
+# Key Components
+# 1.
+# Matrix Definition
+# strategy:
+#   matrix:
+#     server: ${{ fromJson(inputs.deploymentMatrix) }}
+# matrix: This defines the matrix strategy for the job.
+# server: The matrix variable that iterates over each server configuration. The fromJson function is used to parse the deploymentMatrix input, which is a JSON string containing server details.
+# 2.
+# Dynamic Job Names
+# name: '${{ matrix.server.name }}: Prepare release'
+# The job name dynamically includes the server's name from the matrix, making it easy to identify which server each job is targeting.
+# 3.
+# Steps Using Matrix Variables
+# Throughout the job steps, the matrix variables are used to customize actions for each server. For example:
+# host: ${{ matrix.server.ip }}
+# username: ${{ matrix.server.username }}
+# port: ${{ matrix.server.port }}
+# These variables are extracted from each server configuration in the deploymentMatrix, allowing the workflow to connect to and operate on each server individually.
+
+
+# Jobs Utilizing the Matrix
+# 1.
+# prepare-release-on-servers
+# This job prepares the release on each server by downloading the artifact, uploading it to the server, and extracting it.
+# 2.
+# activate-release
+# This job activates the release on each server by creating a symbolic link to the new release and reloading the application.
+# 3.
+# clean-up
+# This job cleans up old releases and artifacts on each server, ensuring that only the latest deployments are retained.
+
+
+# Benefits of Using a Matrix Strategy
+# Parallel Execution: Jobs are executed in parallel for each server, significantly reducing the time required for deployment.
+# Scalability: Easily scale deployments to additional servers by updating the deploymentMatrix.
+# Consistency: Ensures that the same deployment process is applied uniformly across all servers.
+
+
+# This matrix strategy is a powerful feature of GitHub Actions, enabling efficient and scalable deployments across multiple environments.

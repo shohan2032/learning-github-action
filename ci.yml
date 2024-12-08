@@ -1,0 +1,251 @@
+name: CI Pipeline
+run-name: Building ${{ inputs.releaseType }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      releaseType:
+        description: 'For staging follow the multi staging guidelines'
+        type: choice
+        required: true
+        options:
+          - prod
+
+jobs:
+  build:
+    name: Install and Build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event.inputs.releaseType }}
+      cancel-in-progress: true
+    outputs:
+      DEPLOYMENT_MATRIX: ${{ steps.export-deployment-matrix.outputs.DEPLOYMENT_MATRIX }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.releaseType == 'prod' && 'main' || github.event.inputs.releaseType }}
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9.13.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --force --ignore-scripts
+
+      # - uses: actions/cache@v3
+      #   name: Setup .next cache
+      #   with:
+      #     path: ${{ github.workspace }}/.next/cache
+      #     key: ${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx') }}
+      #     # If source files changed but packages didn't, rebuild from a prior cache.
+      #     restore-keys: |
+      #       ${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_NODE_ENV: production
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          export NEXT_PUBLIC_NODE_ENV=production
+          # export NEXT_PUBLIC_ASSET_PREFIX=${{ inputs.releaseType == 'prod' && 'https://cdn.ezycourse.net'  || 'https://stagingserver.b-cdn.net' }}
+          pnpm build
+
+      - name: Create deployment artifact
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          # delete .next/cache
+          rm -rf .next/cache
+          echo "Deleted .next/cache"
+
+          echo "Creating deployment artifact"
+          tar -czf "${GITHUB_SHA}".tar.gz package.json next.config.js blackList.json whiteList.json .next public .npmrc
+
+          echo "Created deployment artifact"
+
+      - name: Store artifact for distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-build
+          path: ${{ github.sha }}.tar.gz
+          retention-days: 1
+
+      - name: Export deployment matrix
+        id: export-deployment-matrix
+        run: |
+          delimiter="$(openssl rand -hex 8)"
+          JSON="$(cat ./.github/workflows/servers.json)"
+
+          # Filter the JSON based on the releaseType
+          FILTERED_JSON=$(echo "$JSON" | jq --arg releaseType "${{ inputs.releaseType == 'prod' && 'prod'  || 'staging' }}" 'map(select(.type == $releaseType))')
+          echo "DEPLOYMENT_MATRIX<<${delimiter}" >> "${GITHUB_OUTPUT}"
+          echo "$FILTERED_JSON" >> "${GITHUB_OUTPUT}"
+          echo "${delimiter}" >> "${GITHUB_OUTPUT}"
+
+  deploy:
+    needs: build
+    uses: AppifyLab/courseporium-next/.github/workflows/publish-to-aws.yml@main
+    with:
+      deploymentMatrix: ${{ needs.build.outputs.DEPLOYMENT_MATRIX }}
+      artifactName: app-build
+    secrets:
+      SSH_KEY: ${{  secrets.SSH_KEY }}
+
+
+# Workflow Overview
+# Name and Run Name
+# name: CI Pipeline
+# run-name: Building ${{ inputs.releaseType }}
+# name: The name of the workflow, "CI Pipeline", which is displayed in the GitHub Actions tab.
+# run-name: A dynamic name for each run of the workflow, incorporating the releaseType input to indicate which type of release is being built.
+
+
+# Trigger
+# Workflow Dispatch
+# on:
+#   workflow_dispatch:
+#     inputs:
+#       releaseType:
+#         description: 'For staging follow the multi staging guidelines'
+#         type: choice
+#         required: true
+#         options:
+#           - prod
+# on: Specifies the event that triggers the workflow. Here, it's workflow_dispatch, meaning the workflow can be manually triggered.
+# inputs: Defines inputs required when manually triggering the workflow.
+# releaseType: A choice input that specifies the type of release. It is required and can be set to prod.
+
+
+# Jobs
+# Build Job
+# Job Definition
+# jobs:
+#   build:
+#     name: Install and Build
+#     runs-on: ubuntu-latest
+#     concurrency:
+#       group: ${{ github.workflow }}-${{ github.event.inputs.releaseType }}
+#       cancel-in-progress: true
+#     outputs:
+#       DEPLOYMENT_MATRIX: ${{ steps.export-deployment-matrix.outputs.DEPLOYMENT_MATRIX }}
+# jobs: A collection of jobs to be executed in the workflow.
+# build: The job responsible for building the application.
+# name: The name of the job, "Install and Build".
+# runs-on: Specifies the type of runner to execute the job, here ubuntu-latest.
+# concurrency: Ensures that only one instance of the job runs for a given releaseType.
+# group: Defines the concurrency group using the workflow name and releaseType.
+# cancel-in-progress: If another job with the same group is triggered, the in-progress job is canceled.
+# outputs: Defines outputs from the job, which can be used in subsequent jobs.
+# DEPLOYMENT_MATRIX: An output that stores the deployment matrix generated in the job.
+# Steps in the Build Job
+
+# 1.
+# Checkout Code
+# - uses: actions/checkout@v4
+#   with:
+#     ref: ${{ github.event.inputs.releaseType == 'prod' && 'main' || github.event.inputs.releaseType }}
+# uses: Specifies an action to be used. Here, actions/checkout@v4 is used to check out the repository code.
+# with: Provides inputs to the action.
+# ref: Checks out the main branch if releaseType is prod, otherwise checks out the branch specified by releaseType.
+# 2.
+# Setup pnpm
+# - uses: pnpm/action-setup@v3
+#   with:
+#     version: 9.13.2
+# uses: Uses the pnpm/action-setup@v3 action to set up pnpm.
+# with: Specifies the version of pnpm to use.
+# 3.
+# Setup Node.js
+# - uses: actions/setup-node@v4
+#   with:
+#     node-version: 22
+#     cache: 'pnpm'
+# uses: Uses the actions/setup-node@v4 action to set up Node.js.
+# with: Specifies the Node.js version and caching strategy for pnpm.
+# 4.
+# Install Dependencies
+# - name: Install dependencies
+#   run: pnpm install --force --ignore-scripts
+# name: Describes the step.
+# run: Executes a shell command to install dependencies using pnpm.
+# 5.
+# Build Application
+# - name: Build
+#   env:
+#     NEXT_PUBLIC_NODE_ENV: production
+#     NODE_OPTIONS: --max-old-space-size=4096
+#   run: |
+#     export NEXT_PUBLIC_NODE_ENV=production
+#     pnpm build
+# name: Describes the step.
+# env: Sets environment variables for the build process.
+# run: Executes a shell command to build the application.
+# 6.
+# Create Deployment Artifact
+# - name: Create deployment artifact
+#   env:
+#     GITHUB_SHA: ${{ github.sha }}
+#   run: |
+#     rm -rf .next/cache
+#     tar -czf "${GITHUB_SHA}".tar.gz package.json next.config.js blackList.json whiteList.json .next public .npmrc
+# name: Describes the step.
+# env: Sets the GITHUB_SHA environment variable.
+# run: Deletes the cache and creates a tarball of the application files.
+# 7.
+# Store Artifact
+# - name: Store artifact for distribution
+#   uses: actions/upload-artifact@v4
+#   with:
+#     name: app-build
+#     path: ${{ github.sha }}.tar.gz
+#     retention-days: 1
+# name: Describes the step.
+# uses: Uses the actions/upload-artifact@v4 action to upload the artifact.
+# with: Specifies the artifact name, path, and retention period.
+# 8.
+# Export Deployment Matrix
+# - name: Export deployment matrix
+#   id: export-deployment-matrix
+#   run: |
+#     delimiter="$(openssl rand -hex 8)"
+#     JSON="$(cat ./.github/workflows/servers.json)"
+#     FILTERED_JSON=$(echo "$JSON" | jq --arg releaseType "${{ inputs.releaseType == 'prod' && 'prod'  || 'staging' }}" 'map(select(.type == $releaseType))')
+#     echo "DEPLOYMENT_MATRIX<<${delimiter}" >> "${GITHUB_OUTPUT}"
+#     echo "$FILTERED_JSON" >> "${GITHUB_OUTPUT}"
+#     echo "${delimiter}" >> "${GITHUB_OUTPUT}"
+# name: Describes the step.
+# id: Sets an ID for the step to reference its outputs.
+# run: Executes a shell command to filter the servers.json file based on releaseType and export the result as DEPLOYMENT_MATRIX.
+
+
+# Deploy Job
+# Job Definition
+# deploy:
+#   needs: build
+#   uses: AppifyLab/courseporium-next/.github/workflows/publish-to-aws.yml@main
+#   with:
+#     deploymentMatrix: ${{ needs.build.outputs.DEPLOYMENT_MATRIX }}
+#     artifactName: app-build
+#   secrets:
+#     SSH_KEY: ${{  secrets.SSH_KEY }}
+# deploy: The job responsible for deploying the application.
+# needs: Specifies that this job depends on the completion of the build job.
+# uses: Calls the publish-to-aws.yml workflow, which handles the deployment process.
+# with: Provides inputs to the called workflow.
+# deploymentMatrix: Passes the DEPLOYMENT_MATRIX output from the build job.
+# artifactName: Specifies the name of the artifact to be deployed.
+# secrets: Passes the SSH_KEY secret for secure server connections.
+
+
+# Use Cases
+# GitHub Actions: Automate CI/CD pipelines, run tests, build, and deploy applications.
+# Matrix Strategy: Deploy to multiple environments or configurations in parallel.
+# Secrets: Securely manage sensitive information like SSH keys.
+
+
+# This workflow automates the build process and prepares the application for deployment, which is then executed by the publish-to-aws.yml workflow. It ensures that the application is built, packaged, and ready for deployment across multiple servers efficiently.
